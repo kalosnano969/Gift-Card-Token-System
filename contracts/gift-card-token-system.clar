@@ -7,9 +7,15 @@
 (define-constant err-invalid-amount (err u105))
 (define-constant err-unauthorized (err u106))
 (define-constant err-gift-card-exists (err u107))
+(define-constant err-already-listed (err u108))
+(define-constant err-not-listed (err u109))
+(define-constant err-invalid-price (err u110))
+(define-constant err-cannot-buy-own (err u111))
 
 (define-data-var next-gift-card-id uint u1)
 (define-data-var contract-balance uint u0)
+(define-data-var total-marketplace-sales uint u0)
+(define-data-var marketplace-fee-rate uint u250)
 
 (define-map gift-cards 
   { gift-card-id: uint }
@@ -39,6 +45,29 @@
   { user: principal, gift-card-id: uint }
   { exists: bool }
 )
+
+(define-map marketplace-listings
+  { gift-card-id: uint }
+  {
+    seller: principal,
+    price: uint,
+    listed-at: uint,
+    is-active: bool
+  }
+)
+
+(define-map marketplace-sales
+  { sale-id: uint }
+  {
+    gift-card-id: uint,
+    seller: principal,
+    buyer: principal,
+    price: uint,
+    completed-at: uint
+  }
+)
+
+(define-data-var next-sale-id uint u1)
 
 (define-private (get-user-balance (user principal))
   (default-to u0 (get balance (map-get? user-balances { user: user })))
@@ -100,6 +129,21 @@
 
 (define-read-only (get-next-gift-card-id)
   (var-get next-gift-card-id)
+)
+
+(define-read-only (get-marketplace-listing (gift-card-id uint))
+  (map-get? marketplace-listings { gift-card-id: gift-card-id })
+)
+
+(define-read-only (get-marketplace-sale (sale-id uint))
+  (map-get? marketplace-sales { sale-id: sale-id })
+)
+
+(define-read-only (is-listed-on-marketplace (gift-card-id uint))
+  (match (get-marketplace-listing gift-card-id)
+    listing (get is-active listing)
+    false
+  )
 )
 
 (define-public (issue-gift-card (recipient principal) (amount uint) (expiration-blocks uint))
@@ -164,6 +208,102 @@
       
       (ok amount)
     )
+  )
+)
+
+(define-public (list-gift-card-on-marketplace (gift-card-id uint) (price uint))
+  (let (
+    (gift-card (unwrap! (get-gift-card gift-card-id) err-not-found))
+    (owner-info (unwrap! (get-gift-card-owner gift-card-id) err-not-found))
+  )
+    (asserts! (is-eq tx-sender (get owner owner-info)) err-unauthorized)
+    (asserts! (get is-active gift-card) err-not-found)
+    (asserts! (not (get is-redeemed gift-card)) err-already-redeemed)
+    (asserts! (not (is-expired (get expiration-block gift-card))) err-expired)
+    (asserts! (> (get remaining-balance gift-card) u0) err-insufficient-balance)
+    (asserts! (> price u0) err-invalid-price)
+    (asserts! (<= price (get remaining-balance gift-card)) err-invalid-price)
+    (asserts! (not (is-listed-on-marketplace gift-card-id)) err-already-listed)
+    
+    (map-set marketplace-listings
+      { gift-card-id: gift-card-id }
+      {
+        seller: tx-sender,
+        price: price,
+        listed-at: stacks-block-height,
+        is-active: true
+      }
+    )
+    
+    (ok true)
+  )
+)
+
+(define-public (delist-gift-card-from-marketplace (gift-card-id uint))
+  (let (
+    (listing (unwrap! (get-marketplace-listing gift-card-id) err-not-listed))
+  )
+    (asserts! (is-eq tx-sender (get seller listing)) err-unauthorized)
+    (asserts! (get is-active listing) err-not-listed)
+    
+    (map-set marketplace-listings
+      { gift-card-id: gift-card-id }
+      (merge listing { is-active: false })
+    )
+    
+    (ok true)
+  )
+)
+
+(define-public (buy-gift-card-from-marketplace (gift-card-id uint))
+  (let (
+    (gift-card (unwrap! (get-gift-card gift-card-id) err-not-found))
+    (listing (unwrap! (get-marketplace-listing gift-card-id) err-not-listed))
+    (seller (get seller listing))
+    (price (get price listing))
+    (marketplace-fee (/ (* price (var-get marketplace-fee-rate)) u10000))
+    (seller-amount (- price marketplace-fee))
+    (sale-id (var-get next-sale-id))
+  )
+    (asserts! (get is-active listing) err-not-listed)
+    (asserts! (get is-active gift-card) err-not-found)
+    (asserts! (not (get is-redeemed gift-card)) err-already-redeemed)
+    (asserts! (not (is-expired (get expiration-block gift-card))) err-expired)
+    (asserts! (not (is-eq tx-sender seller)) err-cannot-buy-own)
+    (asserts! (>= (get-user-balance tx-sender) price) err-insufficient-balance)
+    
+    (unwrap! (subtract-from-user-balance tx-sender price) err-insufficient-balance)
+    (add-to-user-balance seller seller-amount)
+    (add-to-user-balance contract-owner marketplace-fee)
+    
+    (map-set gift-card-ownership 
+      { gift-card-id: gift-card-id }
+      { owner: tx-sender }
+    )
+    
+    (remove-gift-card-from-user seller gift-card-id)
+    (add-gift-card-to-user tx-sender gift-card-id)
+    
+    (map-set marketplace-listings
+      { gift-card-id: gift-card-id }
+      (merge listing { is-active: false })
+    )
+    
+    (map-set marketplace-sales
+      { sale-id: sale-id }
+      {
+        gift-card-id: gift-card-id,
+        seller: seller,
+        buyer: tx-sender,
+        price: price,
+        completed-at: stacks-block-height
+      }
+    )
+    
+    (var-set next-sale-id (+ sale-id u1))
+    (var-set total-marketplace-sales (+ (var-get total-marketplace-sales) u1))
+    
+    (ok sale-id)
   )
 )
 
@@ -457,11 +597,63 @@
   (* count amount)
 )
 
+(define-public (set-marketplace-fee-rate (new-rate uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (<= new-rate u1000) err-invalid-amount)
+    
+    (var-set marketplace-fee-rate new-rate)
+    (ok new-rate)
+  )
+)
+
+(define-public (force-delist-gift-card (gift-card-id uint))
+  (let (
+    (listing (unwrap! (get-marketplace-listing gift-card-id) err-not-listed))
+  )
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (get is-active listing) err-not-listed)
+    
+    (map-set marketplace-listings
+      { gift-card-id: gift-card-id }
+      (merge listing { is-active: false })
+    )
+    
+    (ok true)
+  )
+)
+
+(define-read-only (calculate-marketplace-fee (price uint))
+  (/ (* price (var-get marketplace-fee-rate)) u10000)
+)
+
+(define-read-only (get-marketplace-stats)
+  {
+    total-sales: (var-get total-marketplace-sales),
+    current-fee-rate: (var-get marketplace-fee-rate),
+    next-sale-id: (var-get next-sale-id)
+  }
+)
+
+(define-read-only (get-gift-card-with-listing (gift-card-id uint))
+  (match (get-gift-card gift-card-id)
+    gift-card (some {
+      gift-card: gift-card,
+      owner: (get owner (default-to { owner: contract-owner } (get-gift-card-owner gift-card-id))),
+      listing: (get-marketplace-listing gift-card-id),
+      is-listed: (is-listed-on-marketplace gift-card-id),
+      is-valid: (is-gift-card-valid gift-card-id)
+    })
+    none
+  )
+)
+
 (define-read-only (get-contract-stats)
   {
     total-gift-cards: (- (var-get next-gift-card-id) u1),
     contract-balance: (var-get contract-balance),
     total-issued-value: (get-total-issued-value),
-    total-redeemed-value: (get-total-redeemed-value)
+    total-redeemed-value: (get-total-redeemed-value),
+    marketplace-stats: (get-marketplace-stats)
   }
 )

@@ -7,10 +7,11 @@ A complete prepaid token management system built on the Stacks blockchain using 
 - 🎫 **Issue Gift Cards**: Create digital gift cards with custom amounts and expiration dates
 - 💳 **Redeem Tokens**: Convert gift card value to user balance (full or partial redemption)
 - 🔄 **Transfer Cards**: Send gift cards to other users
+- 🛒 **Marketplace Trading**: Buy and sell gift cards at discounted prices on secondary market
 - ⏰ **Expiration Management**: Automatic expiration handling with fund recovery
 - 📊 **Balance Tracking**: Real-time balance management for users and contract
 - 🛡️ **Admin Controls**: Owner-only functions for card management
-- 📈 **Analytics**: Track total issued, redeemed, and contract statistics
+- 📈 **Analytics**: Track total issued, redeemed, and marketplace statistics
 
 ## 🚀 Quick Start
 
@@ -84,6 +85,26 @@ clarinet integrate
 (contract-call? .gift-card-token-system withdraw-from-balance u1000)
 ```
 
+### 🛒 Marketplace Operations
+
+**List Gift Card**: `list-gift-card-on-marketplace`
+
+```clarity
+(contract-call? .gift-card-token-system list-gift-card-on-marketplace u1 u800)
+```
+
+**Buy Gift Card**: `buy-gift-card-from-marketplace`
+
+```clarity
+(contract-call? .gift-card-token-system buy-gift-card-from-marketplace u1)
+```
+
+**Delist Gift Card**: `delist-gift-card-from-marketplace`
+
+```clarity
+(contract-call? .gift-card-token-system delist-gift-card-from-marketplace u1)
+```
+
 ## 📋 Read-Only Functions
 
 ### 🔍 Check Gift Card Details
@@ -103,6 +124,14 @@ clarinet integrate
 
 ```clarity
 (contract-call? .gift-card-token-system get-contract-stats)
+```
+
+### 🛒 Marketplace Information
+
+```clarity
+(contract-call? .gift-card-token-system get-marketplace-listing u1)
+(contract-call? .gift-card-token-system get-marketplace-stats)
+(contract-call? .gift-card-token-system get-gift-card-with-listing u1)
 ```
 
 ## 🛠️ Admin Functions
@@ -143,6 +172,13 @@ clarinet integrate
 (contract-call? .gift-card-token-system extend-expiration u1 u144)
 ```
 
+### 🛒 Marketplace Admin
+
+```clarity
+(contract-call? .gift-card-token-system set-marketplace-fee-rate u250)
+(contract-call? .gift-card-token-system force-delist-gift-card u1)
+```
+
 ## 🏗️ Architecture
 
 ### Data Structures
@@ -151,12 +187,15 @@ clarinet integrate
 - **gift-card-ownership**: Maps gift card IDs to current owners
 - **user-balances**: Tracks redeemed balances per user
 - **user-gift-cards**: Efficient lookup of user's gift cards
+- **marketplace-listings**: Active marketplace listings with prices and sellers
+- **marketplace-sales**: Completed sales history for analytics
 
 ### Key Features
 
 - ✅ **Expiration Handling**: Cards automatically expire after specified blocks
 - ✅ **Partial Redemption**: Use gift cards in smaller amounts
 - ✅ **Transfer System**: Move gift cards between users
+- ✅ **Marketplace Trading**: Secondary market with configurable fees
 - ✅ **Admin Recovery**: Recover funds from expired cards
 - ✅ **Emergency Controls**: Pause system in case of issues
 
@@ -179,6 +218,10 @@ clarinet integrate
 | u105 | `err-invalid-amount` | Invalid amount provided |
 | u106 | `err-unauthorized` | User not authorized for this operation |
 | u107 | `err-gift-card-exists` | Gift card already exists |
+| u108 | `err-already-listed` | Gift card already listed on marketplace |
+| u109 | `err-not-listed` | Gift card not found in marketplace |
+| u110 | `err-invalid-price` | Invalid marketplace price |
+| u111 | `err-cannot-buy-own` | Cannot buy your own listed gift card |
 
 ## 🧪 Testing
 
