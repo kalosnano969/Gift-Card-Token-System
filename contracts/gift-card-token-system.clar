@@ -11,6 +11,8 @@
 (define-constant err-not-listed (err u109))
 (define-constant err-invalid-price (err u110))
 (define-constant err-cannot-buy-own (err u111))
+(define-constant err-insufficient-points (err u112))
+(define-constant err-invalid-discount (err u113))
 
 (define-data-var next-gift-card-id uint u1)
 (define-data-var contract-balance uint u0)
@@ -69,6 +71,13 @@
 
 (define-data-var next-sale-id uint u1)
 
+(define-map user-loyalty-points
+  { user: principal }
+  { points: uint }
+)
+
+(define-data-var max-loyalty-discount uint u5000)
+
 (define-private (get-user-balance (user principal))
   (default-to u0 (get balance (map-get? user-balances { user: user })))
 )
@@ -94,6 +103,44 @@
 
 (define-private (is-expired (expiration-block uint))
   (> stacks-block-height expiration-block)
+)
+
+(define-private (get-user-loyalty-points (user principal))
+  (default-to u0 (get points (map-get? user-loyalty-points { user: user })))
+)
+
+(define-private (set-user-loyalty-points (user principal) (new-points uint))
+  (map-set user-loyalty-points { user: user } { points: new-points })
+)
+
+(define-private (add-loyalty-points (user principal) (points-to-add uint))
+  (let ((current-points (get-user-loyalty-points user)))
+    (set-user-loyalty-points user (+ current-points points-to-add))
+  )
+)
+
+(define-private (subtract-loyalty-points (user principal) (points-to-subtract uint))
+  (let ((current-points (get-user-loyalty-points user)))
+    (if (>= current-points points-to-subtract)
+      (ok (set-user-loyalty-points user (- current-points points-to-subtract)))
+      (err err-insufficient-points)
+    )
+  )
+)
+
+(define-private (calculate-loyalty-discount (user-points uint) (original-fee uint))
+  (let (
+    (discount-rate (/ (* user-points u100) u10))
+    (capped-discount-rate (if (> discount-rate (var-get max-loyalty-discount))
+                              (var-get max-loyalty-discount)
+                              discount-rate))
+    (discount-amount (/ (* original-fee capped-discount-rate) u10000))
+  )
+    (if (> discount-amount original-fee)
+      u0
+      (- original-fee discount-amount)
+    )
+  )
 )
 
 (define-private (add-gift-card-to-user (user principal) (gift-card-id uint))
@@ -195,17 +242,18 @@
     (asserts! (> amount u0) err-invalid-amount)
     
     (let ((new-remaining-balance (- (get remaining-balance gift-card) amount)))
-      (map-set gift-cards 
+      (map-set gift-cards
         { gift-card-id: gift-card-id }
         (merge gift-card {
           remaining-balance: new-remaining-balance,
           is-redeemed: (is-eq new-remaining-balance u0)
         })
       )
-      
+
       (add-to-user-balance tx-sender amount)
+      (add-loyalty-points tx-sender amount)
       (var-set contract-balance (- (var-get contract-balance) amount))
-      
+
       (ok amount)
     )
   )
@@ -261,8 +309,12 @@
     (listing (unwrap! (get-marketplace-listing gift-card-id) err-not-listed))
     (seller (get seller listing))
     (price (get price listing))
-    (marketplace-fee (/ (* price (var-get marketplace-fee-rate)) u10000))
-    (seller-amount (- price marketplace-fee))
+    (base-fee (/ (* price (var-get marketplace-fee-rate)) u10000))
+    (buyer-points (get-user-loyalty-points tx-sender))
+    (discounted-fee (calculate-loyalty-discount buyer-points base-fee))
+    (seller-amount (- price discounted-fee))
+    (fee-to-owner (- base-fee discounted-fee))
+    (total-fee (+ discounted-fee fee-to-owner))
     (sale-id (var-get next-sale-id))
   )
     (asserts! (get is-active listing) err-not-listed)
@@ -271,24 +323,26 @@
     (asserts! (not (is-expired (get expiration-block gift-card))) err-expired)
     (asserts! (not (is-eq tx-sender seller)) err-cannot-buy-own)
     (asserts! (>= (get-user-balance tx-sender) price) err-insufficient-balance)
-    
+
     (unwrap! (subtract-from-user-balance tx-sender price) err-insufficient-balance)
     (add-to-user-balance seller seller-amount)
-    (add-to-user-balance contract-owner marketplace-fee)
-    
-    (map-set gift-card-ownership 
+    (add-to-user-balance contract-owner (+ discounted-fee fee-to-owner))
+    (add-loyalty-points tx-sender price)
+    (add-loyalty-points seller (/ price u2))
+
+    (map-set gift-card-ownership
       { gift-card-id: gift-card-id }
       { owner: tx-sender }
     )
-    
+
     (remove-gift-card-from-user seller gift-card-id)
     (add-gift-card-to-user tx-sender gift-card-id)
-    
+
     (map-set marketplace-listings
       { gift-card-id: gift-card-id }
       (merge listing { is-active: false })
     )
-    
+
     (map-set marketplace-sales
       { sale-id: sale-id }
       {
@@ -299,10 +353,10 @@
         completed-at: stacks-block-height
       }
     )
-    
+
     (var-set next-sale-id (+ sale-id u1))
     (var-set total-marketplace-sales (+ (var-get total-marketplace-sales) u1))
-    
+
     (ok sale-id)
   )
 )
@@ -341,19 +395,20 @@
     (asserts! (not (is-expired (get expiration-block gift-card))) err-expired)
     (asserts! (>= (get remaining-balance gift-card) amount) err-insufficient-balance)
     (asserts! (> amount u0) err-invalid-amount)
-    
+
     (let ((new-remaining-balance (- (get remaining-balance gift-card) amount)))
-      (map-set gift-cards 
+      (map-set gift-cards
         { gift-card-id: gift-card-id }
         (merge gift-card {
           remaining-balance: new-remaining-balance,
           is-redeemed: (is-eq new-remaining-balance u0)
         })
       )
-      
+
       (add-to-user-balance tx-sender amount)
+      (add-loyalty-points tx-sender amount)
       (var-set contract-balance (- (var-get contract-balance) amount))
-      
+
       (ok new-remaining-balance)
     )
   )
@@ -466,6 +521,23 @@
     (var-set contract-balance (+ (var-get contract-balance) u100))
     
     gift-card-id
+  )
+)
+
+(define-public (redeem-loyalty-points (points-to-redeem uint))
+  (begin
+    (asserts! (> points-to-redeem u0) err-invalid-amount)
+    (unwrap! (subtract-loyalty-points tx-sender points-to-redeem) err-insufficient-points)
+    (ok true)
+  )
+)
+
+(define-public (set-max-loyalty-discount (new-max-discount uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (<= new-max-discount u10000) err-invalid-discount)
+    (var-set max-loyalty-discount new-max-discount)
+    (ok new-max-discount)
   )
 )
 
@@ -655,5 +727,29 @@
     total-issued-value: (get-total-issued-value),
     total-redeemed-value: (get-total-redeemed-value),
     marketplace-stats: (get-marketplace-stats)
+  }
+)
+
+(define-read-only (get-user-loyalty-points-balance (user principal))
+  (get-user-loyalty-points user)
+)
+
+(define-read-only (calculate-loyalty-fee-discount (user principal) (original-fee uint))
+  (let (
+    (user-points (get-user-loyalty-points user))
+    (discounted-fee (calculate-loyalty-discount user-points original-fee))
+  )
+    {
+      original-fee: original-fee,
+      discounted-fee: discounted-fee,
+      discount-amount: (- original-fee discounted-fee),
+      user-points: user-points
+    }
+  )
+)
+
+(define-read-only (get-loyalty-stats)
+  {
+    max-loyalty-discount: (var-get max-loyalty-discount)
   }
 )
