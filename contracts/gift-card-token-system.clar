@@ -414,6 +414,31 @@
   )
 )
 
+(define-public (reload-gift-card (gift-card-id uint) (amount uint))
+  (let (
+    (gift-card (unwrap! (get-gift-card gift-card-id) err-not-found))
+    (owner-info (unwrap! (get-gift-card-owner gift-card-id) err-not-found))
+  )
+    (asserts! (is-eq tx-sender (get owner owner-info)) err-unauthorized)
+    (asserts! (get is-active gift-card) err-not-found)
+    (asserts! (not (get is-redeemed gift-card)) err-already-redeemed)
+    (asserts! (not (is-expired (get expiration-block gift-card))) err-expired)
+    (asserts! (> amount u0) err-invalid-amount)
+    (unwrap! (subtract-from-user-balance tx-sender amount) err-insufficient-balance)
+    (let ((new-remaining-balance (+ (get remaining-balance gift-card) amount)))
+      (map-set gift-cards
+        { gift-card-id: gift-card-id }
+        (merge gift-card {
+          remaining-balance: new-remaining-balance,
+          is-redeemed: false
+        })
+      )
+      (var-set contract-balance (+ (var-get contract-balance) amount))
+      (ok new-remaining-balance)
+    )
+  )
+)
+
 (define-public (deactivate-gift-card (gift-card-id uint))
   (let (
     (gift-card (unwrap! (get-gift-card gift-card-id) err-not-found))
