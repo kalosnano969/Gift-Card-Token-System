@@ -778,3 +778,50 @@
     max-loyalty-discount: (var-get max-loyalty-discount)
   }
 )
+
+(define-public (split-gift-card (gift-card-id uint) (split-amount uint))
+  (let (
+    (original-card (unwrap! (get-gift-card gift-card-id) err-not-found))
+    (owner-info (unwrap! (get-gift-card-owner gift-card-id) err-not-found))
+    (new-gift-card-id (var-get next-gift-card-id))
+  )
+    (asserts! (is-eq tx-sender (get owner owner-info)) err-unauthorized)
+    (asserts! (get is-active original-card) err-not-found)
+    (asserts! (not (get is-redeemed original-card)) err-already-redeemed)
+    (asserts! (not (is-expired (get expiration-block original-card))) err-expired)
+    (asserts! (> split-amount u0) err-invalid-amount)
+    (asserts! (< split-amount (get remaining-balance original-card)) err-insufficient-balance)
+    
+    (map-set gift-cards
+      { gift-card-id: gift-card-id }
+      (merge original-card {
+        amount: (- (get amount original-card) split-amount),
+        remaining-balance: (- (get remaining-balance original-card) split-amount)
+      })
+    )
+    
+    (map-set gift-cards
+      { gift-card-id: new-gift-card-id }
+      {
+        issuer: (get issuer original-card),
+        recipient: tx-sender,
+        amount: split-amount,
+        remaining-balance: split-amount,
+        expiration-block: (get expiration-block original-card),
+        is-redeemed: false,
+        is-active: true,
+        created-at: stacks-block-height
+      }
+    )
+    
+    (map-set gift-card-ownership 
+      { gift-card-id: new-gift-card-id }
+      { owner: tx-sender }
+    )
+    
+    (add-gift-card-to-user tx-sender new-gift-card-id)
+    (var-set next-gift-card-id (+ new-gift-card-id u1))
+    
+    (ok new-gift-card-id)
+  )
+)
