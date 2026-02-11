@@ -825,3 +825,46 @@
     (ok new-gift-card-id)
   )
 )
+
+(define-public (merge-gift-cards (source-id uint) (target-id uint))
+  (let (
+    (source-card (unwrap! (get-gift-card source-id) err-not-found))
+    (target-card (unwrap! (get-gift-card target-id) err-not-found))
+    (source-owner (unwrap! (get-gift-card-owner source-id) err-not-found))
+    (target-owner (unwrap! (get-gift-card-owner target-id) err-not-found))
+  )
+    (asserts! (not (is-eq source-id target-id)) err-invalid-amount)
+    (asserts! (is-eq tx-sender (get owner source-owner)) err-unauthorized)
+    (asserts! (is-eq tx-sender (get owner target-owner)) err-unauthorized)
+    
+    (asserts! (get is-active source-card) err-not-found)
+    (asserts! (not (get is-redeemed source-card)) err-already-redeemed)
+    (asserts! (not (is-expired (get expiration-block source-card))) err-expired)
+    (asserts! (> (get remaining-balance source-card) u0) err-insufficient-balance)
+    
+    (asserts! (get is-active target-card) err-not-found)
+    (asserts! (not (get is-redeemed target-card)) err-already-redeemed)
+    (asserts! (not (is-expired (get expiration-block target-card))) err-expired)
+
+    (let ((transfer-amount (get remaining-balance source-card)))
+      (map-set gift-cards
+        { gift-card-id: target-id }
+        (merge target-card {
+          amount: (+ (get amount target-card) transfer-amount),
+          remaining-balance: (+ (get remaining-balance target-card) transfer-amount)
+        })
+      )
+      
+      (map-set gift-cards
+        { gift-card-id: source-id }
+        (merge source-card {
+          remaining-balance: u0,
+          is-redeemed: true,
+          is-active: false
+        })
+      )
+      
+      (ok transfer-amount)
+    )
+  )
+)
